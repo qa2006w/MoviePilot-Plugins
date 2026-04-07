@@ -1,0 +1,12 @@
+{
+  "DownloadingPlus": {
+    "name": "下載狀態增強",
+    "description": "Telegram 發 /dlstatus 顯示速率、進度條、剩餘時間、已下載大小",
+    "labels": "下載",
+    "version": "1.8",
+    "icon": "https://raw.githubusercontent.com/qa2006w/MoviePilot-Plugins/main/icons/DownloadingPlus.png",
+    "author": "qa2006w",
+    "level": 1,
+    "v2": true
+  }
+}
