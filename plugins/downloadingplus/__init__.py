@@ -11,11 +11,11 @@ logger = logging.getLogger(__name__)
 
 class DownloadingPlus(_PluginBase):
     plugin_name = "下載狀態增強"
-    plugin_desc = "增強 /downloading 指令，顯示速率、剩餘時間、已下載大小"
+    plugin_desc = "增強 /downloading 指令，顯示速率、剩餘時間、已下載大小，支援 qBittorrent / Transmission"
     plugin_icon = "download.png"
-    plugin_version = "1.8"
-    plugin_author = "DEDE"
-    author_url = ""
+    plugin_version = "1.9"
+    plugin_author = "qa2006w"
+    author_url = "https://github.com/qa2006w/MoviePilot-Plugins"
     plugin_config_prefix = "downloadingplus_"
     plugin_order = 20
     auth_level = 1
@@ -45,6 +45,52 @@ class DownloadingPlus(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         return []
+
+    def _get_all_torrents(self):
+        """取得所有下載器的下載中種子"""
+        db = SystemConfigOper()
+        downloaders = db.get(SystemConfigKey.Downloaders) or []
+        all_torrents = []
+
+        for d in downloaders:
+            if not d.get("enabled"):
+                continue
+            dtype = d.get("type", "")
+            cfg = d.get("config", {})
+            name = d.get("name", dtype)
+
+            try:
+                if dtype == "qbittorrent":
+                    qb = Qbittorrent(
+                        host=cfg.get("host"),
+                        username=cfg.get("username"),
+                        password=cfg.get("password")
+                    )
+                    torrents, error = qb.get_torrents(status='downloading')
+                    if not error and torrents:
+                        for t in torrents:
+                            t["_downloader"] = name
+                        all_torrents.extend(torrents)
+                elif dtype == "transmission":
+                    try:
+                        from app.modules.transmission.transmission import Transmission
+                        tr = Transmission(
+                            host=cfg.get("host"),
+                            port=cfg.get("port"),
+                            username=cfg.get("username"),
+                            password=cfg.get("password")
+                        )
+                        torrents, error = tr.get_torrents(status='downloading')
+                        if not error and torrents:
+                            for t in torrents:
+                                t["_downloader"] = name
+                            all_torrents.extend(torrents)
+                    except Exception as e:
+                        logger.warning(f"Transmission 讀取失敗: {e}")
+            except Exception as e:
+                logger.warning(f"下載器 {name} 讀取失敗: {e}")
+
+        return all_torrents
 
     @eventmanager.register(EventType.PluginAction)
     def handle(self, event: Event):
@@ -86,31 +132,15 @@ class DownloadingPlus(_PluginBase):
             return f"{sec}秒"
 
         try:
-            db = SystemConfigOper()
-            downloaders = db.get(SystemConfigKey.Downloaders) or []
-            qb_config = None
-            for d in downloaders:
-                if d.get("type") == "qbittorrent" and d.get("enabled"):
-                    qb_config = d.get("config", {})
-                    break
-
-            if not qb_config:
-                self.post_message(channel=channel, title="❌ 找不到 qBittorrent 設定", userid=userid, source=source)
-                return
-
-            qb = Qbittorrent(
-                host=qb_config.get("host"),
-                username=qb_config.get("username"),
-                password=qb_config.get("password")
-            )
-            torrents, error = qb.get_torrents(status="downloading")
-
-            if error:
-                self.post_message(channel=channel, title="❌ 無法連接 qBittorrent", userid=userid, source=source)
-                return
+            torrents = self._get_all_torrents()
 
             if not torrents:
-                self.post_message(channel=channel, title="✅ 目前沒有下載中的任務", userid=userid, source=source)
+                self.post_message(
+                    channel=channel,
+                    title="✅ 目前沒有下載中的任務",
+                    userid=userid,
+                    source=source
+                )
                 return
 
             title = f"📥 下載中（共 {len(torrents)} 個任務）"
@@ -123,14 +153,16 @@ class DownloadingPlus(_PluginBase):
                 progress = torrent.get("progress", 0) * 100
                 dlspeed = torrent.get("dlspeed", 0)
                 eta = torrent.get("eta", -1)
+                downloader = torrent.get("_downloader", "")
 
                 bar_len = 10
                 filled = int(bar_len * progress / 100)
                 bar = "█" * filled + "░" * (bar_len - filled)
 
+                dl_tag = f" [{downloader}]" if downloader else ""
                 line = (
                     f"{'─'*28}\n"
-                    f"🎬 {i}. {name[:38]}{'...' if len(name)>38 else ''}\n"
+                    f"🎬 {i}. {name[:38]}{'...' if len(name)>38 else ''}{dl_tag}\n"
                     f"[{bar}] {progress:.1f}%\n"
                     f"📦 {fmt_size(downloaded)} / {fmt_size(size)}\n"
                     f"⚡ ↓ {fmt_speed(dlspeed)}\n"
@@ -148,7 +180,12 @@ class DownloadingPlus(_PluginBase):
 
         except Exception as e:
             logger.error(f"DownloadingPlus error: {e}")
-            self.post_message(channel=channel, title=f"❌ 發生錯誤：{str(e)}", userid=userid, source=source)
+            self.post_message(
+                channel=channel,
+                title=f"❌ 發生錯誤：{str(e)}",
+                userid=userid,
+                source=source
+            )
 
     def get_form(self) -> Tuple[List, Dict]:
         return [
