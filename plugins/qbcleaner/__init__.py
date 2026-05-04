@@ -8,26 +8,16 @@ import httpx
 
 
 class QbCleaner(_PluginBase):
-    # 插件名稱
     plugin_name = "上傳115後清理qBit"
-    # 插件描述
     plugin_desc = "115上傳完成後，自動刪除qBittorrent中對應的種子與文件"
-    # 插件圖標
     plugin_icon = "https://raw.githubusercontent.com/honmashironeko/PublicFiles/main/icons/qbittorrent.png"
-    # 插件版本
-    plugin_version = "1.1"
-    # 插件作者
+    plugin_version = "1.2"
     plugin_author = "qa2006w"
-    # 作者主頁
     author_url = "https://github.com/qa2006w"
-    # 插件配置項ID前綴
     plugin_config_prefix = "qbcleaner_"
-    # 加載順序
     plugin_order = 99
-    # 可使用的用戶級別
     auth_level = 1
 
-    # 私有屬性
     _enabled: bool = False
     _qb_url: str = ""
     _qb_username: str = ""
@@ -179,7 +169,7 @@ class QbCleaner(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "插件會監聽整理完成事件，比對文件名找到對應的 qBittorrent 種子，並自動刪除。建議開啟「同時刪除本地文件」以釋放 /downloads/ 空間。",
+                                            "text": "插件使用 download_hash 精確對應 qBittorrent 種子並刪除，無需比對文件名。建議開啟「同時刪除本地文件」以釋放 /downloads/ 空間。",
                                         },
                                     }
                                 ],
@@ -215,66 +205,23 @@ class QbCleaner(_PluginBase):
             logger.error(f"【QbCleaner】qBittorrent 連線失敗: {e}")
             return False
 
-    def _get_torrents(self, client: httpx.Client) -> List[dict]:
+    def _delete_by_hash(self, torrent_hash: str) -> bool:
         try:
-            resp = client.get(f"{self._qb_url}/api/v2/torrents/info", timeout=10)
-            return resp.json()
-        except Exception as e:
-            logger.error(f"【QbCleaner】取得種子列表失敗: {e}")
-            return []
-
-    def _delete_torrent(self, client: httpx.Client, torrent_hash: str, delete_files: bool) -> bool:
-        try:
-            resp = client.post(
-                f"{self._qb_url}/api/v2/torrents/delete",
-                data={
-                    "hashes": torrent_hash,
-                    "deleteFiles": "true" if delete_files else "false",
-                },
-                timeout=10,
-            )
-            return resp.status_code == 200
+            with httpx.Client(follow_redirects=True) as client:
+                if not self._qb_login(client):
+                    return False
+                resp = client.post(
+                    f"{self._qb_url}/api/v2/torrents/delete",
+                    data={
+                        "hashes": torrent_hash,
+                        "deleteFiles": "true" if self._delete_files else "false",
+                    },
+                    timeout=10,
+                )
+                return resp.status_code == 200
         except Exception as e:
             logger.error(f"【QbCleaner】刪除種子失敗: {e}")
             return False
-
-    def _find_and_delete(self, filename: str):
-        if not self._qb_url or not self._qb_username:
-            logger.warn("【QbCleaner】未設定 qBittorrent 連線資訊")
-            return
-
-        base_name = re.sub(r'\.[^.]+$', '', filename)
-
-        with httpx.Client(follow_redirects=True) as client:
-            if not self._qb_login(client):
-                return
-
-            torrents = self._get_torrents(client)
-            if not torrents:
-                logger.warn("【QbCleaner】未找到任何種子")
-                return
-
-            matched = []
-            for t in torrents:
-                torrent_name = t.get("name", "")
-                torrent_base = re.sub(r'\.[^.]+$', '', torrent_name)
-                if base_name.lower() in torrent_base.lower() or torrent_base.lower() in base_name.lower():
-                    matched.append(t)
-
-            if not matched:
-                logger.info(f"【QbCleaner】未找到對應種子: {filename}")
-                return
-
-            for t in matched:
-                torrent_hash = t.get("hash")
-                torrent_name = t.get("name")
-                if self._delete_torrent(client, torrent_hash, self._delete_files):
-                    logger.info(
-                        f"【QbCleaner】已刪除種子: {torrent_name}"
-                        + ("（含本地文件）" if self._delete_files else "（保留本地文件）")
-                    )
-                else:
-                    logger.error(f"【QbCleaner】刪除種子失敗: {torrent_name}")
 
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
@@ -289,7 +236,7 @@ class QbCleaner(_PluginBase):
         if not transferinfo:
             return
 
-        # 判斷是否為115上傳 — 從 transferinfo.target_item.storage 取得
+        # 判斷是否為115上傳
         if self._only_u115:
             target_item = getattr(transferinfo, "target_item", None)
             dest_storage = str(getattr(target_item, "storage", "")) if target_item else ""
@@ -297,19 +244,20 @@ class QbCleaner(_PluginBase):
                 logger.debug(f"【QbCleaner】非115目標，跳過: {dest_storage}")
                 return
 
-        # 取得源文件名
-        src_path = getattr(transferinfo, "fileitem", None)
-        if src_path is None:
-            src_path = event_data.get("fileitem")
-
-        if not src_path:
-            logger.warn("【QbCleaner】無法取得源文件資訊")
+        # 用 download_hash 直接刪除
+        download_hash = event_data.get("download_hash")
+        if not download_hash:
+            logger.warn("【QbCleaner】無 download_hash，無法刪除種子")
             return
 
-        from pathlib import Path
-        src_file = Path(str(getattr(src_path, "path", str(src_path)))).name
-        logger.info(f"【QbCleaner】整理完成，開始尋找對應種子: {src_file}")
-        self._find_and_delete(src_file)
+        logger.info(f"【QbCleaner】開始刪除種子 hash: {download_hash}")
+        if self._delete_by_hash(download_hash):
+            logger.info(
+                f"【QbCleaner】已刪除種子 {download_hash}"
+                + ("（含本地文件）" if self._delete_files else "（保留本地文件）")
+            )
+        else:
+            logger.error(f"【QbCleaner】刪除種子失敗: {download_hash}")
 
     def stop_service(self):
         pass
