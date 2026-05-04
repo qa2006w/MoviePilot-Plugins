@@ -10,5 +10,15 @@
     "history": {
       "v1.8": "初始版本"
     }
+  },
+  "QbCleaner": {
+    "name": "上傳115後清理qBit",
+    "description": "115上傳完成後，自動刪除qBittorrent中對應的種子與本地文件",
+    "labels": "下載,清理",
+    "version": "1.0",
+    "icon": "download.png",
+    "author": "qa2006w",
+    "level": 1,
+    "v2": true
   }
 }
