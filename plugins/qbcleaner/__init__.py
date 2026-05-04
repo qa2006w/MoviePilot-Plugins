@@ -15,7 +15,7 @@ class QbCleaner(_PluginBase):
     # 插件圖標
     plugin_icon = "https://raw.githubusercontent.com/honmashironeko/PublicFiles/main/icons/qbittorrent.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "qa2006w"
     # 作者主頁
@@ -201,7 +201,6 @@ class QbCleaner(_PluginBase):
         return []
 
     def _qb_login(self, client: httpx.Client) -> bool:
-        """登入 qBittorrent"""
         try:
             resp = client.post(
                 f"{self._qb_url}/api/v2/auth/login",
@@ -217,7 +216,6 @@ class QbCleaner(_PluginBase):
             return False
 
     def _get_torrents(self, client: httpx.Client) -> List[dict]:
-        """取得所有種子列表"""
         try:
             resp = client.get(f"{self._qb_url}/api/v2/torrents/info", timeout=10)
             return resp.json()
@@ -226,7 +224,6 @@ class QbCleaner(_PluginBase):
             return []
 
     def _delete_torrent(self, client: httpx.Client, torrent_hash: str, delete_files: bool) -> bool:
-        """刪除指定種子"""
         try:
             resp = client.post(
                 f"{self._qb_url}/api/v2/torrents/delete",
@@ -242,12 +239,10 @@ class QbCleaner(_PluginBase):
             return False
 
     def _find_and_delete(self, filename: str):
-        """根據文件名找到對應種子並刪除"""
         if not self._qb_url or not self._qb_username:
             logger.warn("【QbCleaner】未設定 qBittorrent 連線資訊")
             return
 
-        # 去除副檔名做模糊比對
         base_name = re.sub(r'\.[^.]+$', '', filename)
 
         with httpx.Client(follow_redirects=True) as client:
@@ -262,7 +257,6 @@ class QbCleaner(_PluginBase):
             matched = []
             for t in torrents:
                 torrent_name = t.get("name", "")
-                # 比對種子名稱（去除副檔名後比對）
                 torrent_base = re.sub(r'\.[^.]+$', '', torrent_name)
                 if base_name.lower() in torrent_base.lower() or torrent_base.lower() in base_name.lower():
                     matched.append(t)
@@ -284,7 +278,6 @@ class QbCleaner(_PluginBase):
 
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
-        """監聽整理完成事件"""
         if not self._enabled:
             return
 
@@ -292,25 +285,29 @@ class QbCleaner(_PluginBase):
         if not event_data:
             return
 
-        # 取得整理資訊
         transferinfo = event_data.get("transferinfo")
         if not transferinfo:
             return
 
-        # 判斷是否為115上傳
+        # 判斷是否為115上傳 — 從 transferinfo.target_item.storage 取得
         if self._only_u115:
-            dest_storage = str(event_data.get("dest_storage", ""))
+            target_item = getattr(transferinfo, "target_item", None)
+            dest_storage = str(getattr(target_item, "storage", "")) if target_item else ""
             if "u115" not in dest_storage.lower() and "115" not in dest_storage.lower():
                 logger.debug(f"【QbCleaner】非115目標，跳過: {dest_storage}")
                 return
 
         # 取得源文件名
-        src_path = getattr(transferinfo, "src_path", None)
+        src_path = getattr(transferinfo, "fileitem", None)
+        if src_path is None:
+            src_path = event_data.get("fileitem")
+
         if not src_path:
+            logger.warn("【QbCleaner】無法取得源文件資訊")
             return
 
         from pathlib import Path
-        src_file = Path(str(src_path)).name
+        src_file = Path(str(getattr(src_path, "path", str(src_path)))).name
         logger.info(f"【QbCleaner】整理完成，開始尋找對應種子: {src_file}")
         self._find_and_delete(src_file)
 
